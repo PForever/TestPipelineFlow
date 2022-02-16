@@ -136,31 +136,49 @@ enum ResultState
     SyncSuccess = 4,
     SyncFailed = 8,
     DbSaveFailed = 16,
+    All = 32 - 1,
 }
-
+class InfrastructureException : Exception
+{
+    public InfrastructureException(string? message) : base(message)
+    {
+    }
+}
+class InvalidOutputStatusException : InfrastructureException
+{
+    public InvalidOutputStatusException(string? message = null) : base(message)
+    {
+    }
+}
 static class Extantions
 {
     private static Func<Result<T>, Result<T>> ToHandlerResult<T>(Func<T, ResultState> handler) => r => handler(r.Value) is var newState && newState != ResultState.Unknown ? new Result<T>(r.Value, newState, null) : r;
     private static Func<Result<T>, ValueTask<Result<T>>> ToHandlerResult<T>(Func<T, ValueTask<ResultState>> handler) => async r => await handler(r.Value) is var newState && newState != ResultState.Unknown ? new Result<T>(r.Value, newState, null) : r;
-
+    private static void VerifyMatchAny(ResultState src, ResultState node)
+    {
+        if (!MatchAny(src, node)) throw new InvalidOutputStatusException($"Unexpected result state {node}. Expected any of {src}");
+    }
+    private static bool MatchAny(ResultState src, ResultState node) => node == ResultState.Unknown && src == ResultState.Unknown || (node & src) != ResultState.Unknown;
 
     public static IEnumerable<Result<T>> HandleEach<T>(this IEnumerable<Result<T>> src, ResultState handleState, Func<Result<T>, Result<T>> handler)
     {
-        foreach (var item in src.Where(i => (i.State & handleState) == i.State))
+        foreach (var item in src.Where(i => MatchAny(i.State, handleState)))
         {
-            yield return handler(item);
+            var result = handler(item);
+            yield return result;
         }
     }
     public static IEnumerable<Result<T>> HandleEachNot<T>(this IEnumerable<Result<T>> src, ResultState handleState, Func<Result<T>, Result<T>> handler)
     {
-        foreach (var item in src.Where(i => (i.State & handleState) != i.State))
+        foreach (var item in src.Where(i => !MatchAny(i.State, handleState)))
         {
-            yield return handler(item);
+            var result = handler(item);
+            yield return result;
         }
     }
     public static IReadOnlyCollection<T> HandleAll<T>(this IEnumerable<Result<T>> src, ResultState handleState, Action<IEnumerable<T>> action)
     {
-        var list = src.Where(i => (i.State & handleState) == i.State).Select(i => i.Value).ToList();
+        var list = src.Where(i => MatchAny(i.State, handleState)).Select(i => i.Value).ToList();
         action(list);
         return list;
     }
@@ -173,8 +191,9 @@ static class Extantions
     {
         await foreach (var item in src)
         {
-            if ((item.State & handleState) != item.State) continue;
-            yield return handler(item);
+            if (!MatchAny(item.State, handleState)) continue;
+            var result = handler(item);
+            yield return result;
         }
     }
 
@@ -183,8 +202,9 @@ static class Extantions
     {
         await foreach (var item in src)
         {
-            if ((item.State & handleState) != item.State) continue;
-            yield return await handler(item);
+            if (!MatchAny(item.State, handleState)) continue;
+            var result = await handler(item);
+            yield return result;
         }
     }
 
@@ -196,8 +216,9 @@ static class Extantions
     {
         await foreach (var item in src)
         {
-            if ((item.State & handleState) == item.State) continue;
-            yield return handler(item);
+            if (MatchAny(item.State, handleState)) continue;
+            var result = handler(item);
+            yield return result;
         }
     }
 
@@ -206,7 +227,7 @@ static class Extantions
         var list = new List<T>();
         await foreach (var item in src)
         {
-            if ((item.State & handleState) == item.State) list.Add(item.Value);
+            if (MatchAny(item.State, handleState)) list.Add(item.Value);
         }
         action(list);
         return list;
@@ -217,7 +238,7 @@ static class Extantions
         var list = new List<T>();
         await foreach (var item in src)
         {
-            if ((item.State & handleState) == item.State) list.Add(item.Value);
+            if (MatchAny(item.State, handleState)) list.Add(item.Value);
         }
         await action(list);
         return list;
